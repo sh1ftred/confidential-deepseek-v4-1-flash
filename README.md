@@ -73,3 +73,34 @@ the full release tag, including its variant.
 All variants build from public inputs. The release workflow uses the standard
 repository token; no private-lab credential is required. Kernel checksums and
 compatibility checks remain enforced by the build and runtime.
+
+### Draft bounded chat input cap
+
+The B300 builds apply `b300/patches/0013-bounded-chat-input.patch` to the pinned
+vLLM build. B200 does not apply this draft patch: it checks that its inference
+sources match the qualified bundle exactly. Chat requests on the patched build
+may omit `max_input_tokens`; when supplied it must be
+a positive JSON integer. The Python frontend checks the final rendered prompt
+(including any template and tool schemas) before scheduling generation. It
+returns HTTP 400 rather than truncating or generating when the cap is exceeded
+or the rendered input is not one tokenized text prompt. Capped requests also
+reject multiple choices, beam search, truncation, and transfer/extension
+parameters that might change how the prompt reaches the engine.
+
+This is the backend half of the router's bounded mode. It doesn't impose an
+output cap or change the router's billing, tool, or retry policy on its own.
+
+Run the CPU-only regression check with Python, Pydantic 2, and GNU patch:
+
+```sh
+python scripts/test_bounded_chat_input.py /path/to/vllm-checkout
+```
+
+The checkout must contain `db9527a46873454610df6dbedf79a36d6bf1a7f6`. The check
+applies the patch with the Dockerfile’s GNU patch flags and exercises its
+validation and serving branch with the pinned vLLM exception class and a
+stand-in renderer and engine. It doesn't run vLLM, tokenize a real
+prompt, build either image, or measure usage. Before enabling the router mode,
+verify on the actual backend that a cap equal to the rendered prompt's billed
+token count succeeds and that a cap one token smaller fails before generation,
+with and without streaming and with a template that adds tool schemas.
