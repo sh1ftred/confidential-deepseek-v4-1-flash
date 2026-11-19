@@ -48,19 +48,38 @@
 
 --- a/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/chat_completion/serving.py
 +++ b/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/chat_completion/serving.py
-@@ -288,6 +288,23 @@
+@@ -288,6 +288,42 @@
 
          conversation, engine_inputs = result
 
 +        if (limit := request.max_input_tokens) is not None:
-+            # Check the final rendered prompt, including the chat template and
-+            # tool schemas. Do not truncate or schedule any engine work here.
++            # Check the final decoder-only prompt. Multimodal prompt IDs
++            # already include image placeholders, as does usage.prompt_tokens.
 +            token_ids = None
-+            if len(engine_inputs) == 1 and engine_inputs[0].get("type") == "token":
-+                token_ids = engine_inputs[0].get("prompt_token_ids")
++            if len(engine_inputs) == 1:
++                engine_input = engine_inputs[0]
++                kind = engine_input.get("type")
++                if (
++                    "encoder_prompt_token_ids" not in engine_input
++                    and "encoder_prompt" not in engine_input
++                ):
++                    if kind == "token":
++                        token_ids = engine_input.get("prompt_token_ids")
++                    elif kind == "multimodal":
++                        placeholders = engine_input.get("mm_placeholders")
++                        hashes = engine_input.get("mm_hashes")
++                        if (
++                            placeholders
++                            and hashes
++                            and set(placeholders) == set(hashes) == {"image"}
++                            and placeholders["image"]
++                            and len(placeholders["image"]) == len(hashes["image"])
++                        ):
++                            token_ids = engine_input.get("prompt_token_ids")
 +            if not isinstance(token_ids, list):
 +                return self.create_error_response(
-+                    "max_input_tokens requires one tokenized text prompt.",
++                    "max_input_tokens requires one tokenized decoder-only "
++                    "prompt with text or images only.",
 +                    param="max_input_tokens",
 +                )
 +            if len(token_ids) > limit:

@@ -153,19 +153,51 @@ def check_protocol(request, validation_error):
 async def check_serving(request, create):
     messages = [{"role": "user", "content": "one raw word"}]
     rendered = {"type": "token", "prompt_token_ids": [10, 11, 12, 13]}
+    # The renderer stand-in provides IDs already expanded around a four-token
+    # image placeholder span. The cap is on all six IDs, not just the two
+    # text IDs or a single placeholder for the image.
+    image = {
+        "type": "multimodal",
+        "prompt_token_ids": [10, 90, 90, 90, 90, 13],
+        "mm_hashes": {"image": ["image-hash"]},
+        "mm_placeholders": {"image": [SimpleNamespace(offset=1, length=4)]},
+    }
     for stream in (False, True):
         for limit, inputs, should_reject in (
             (4, [rendered], False),  # Exact-bound acceptance, no truncation.
             (3, [rendered], True),  # Including hypothetical template/schema overhead.
             (None, [rendered], False),  # Uncapped behavior unchanged.
+            (6, [image], False),
+            (5, [image], True),
+            (None, [image], False),
+            (6, [{**image, "encoder_prompt_token_ids": [1]}], True),
+            (6, [{**image, "encoder_prompt": "other prompt"}], True),
+            (6, [{**image, "mm_placeholders": None}], True),
+            (6, [{**image, "mm_placeholders": {"image": []}}], True),
+            (6, [{**image, "mm_hashes": {"image": ["a", "b"]}}], True),
+            (6, [{**image, "mm_hashes": {"image": []}}], True),
+            (6, [{**image, "mm_hashes": {"image": ["img"], "video": ["v"]}}], True),
+            (6, [{**image, "mm_placeholders": {"audio": [object()]}}], True),
+            (
+                6,
+                [
+                    {
+                        **image,
+                        "mm_hashes": {"audio": ["audio-hash"]},
+                        "mm_placeholders": {"audio": [object()]},
+                    }
+                ],
+                True,
+            ),
             (4, [{"type": "embeds", "prompt_token_ids": [1]}], True),
             (4, [{"type": "multimodal", "prompt_token_ids": [1]}], True),
             (4, [{"type": "enc_dec", "prompt_token_ids": [1]}], True),
             (4, [{"prompt_token_ids": [1]}], True),
             (4, [{"type": "token"}], True),
-            (4, [rendered, rendered], True),
+            (10, [rendered, image], True),
             (4, [], True),
         ):
+            original_ids = [item.get("prompt_token_ids", []).copy() for item in inputs]
             kwargs = {} if limit is None else {"max_input_tokens": limit}
             cap = request(stream=stream, messages=messages, **kwargs)
             req = SimpleNamespace(
@@ -201,7 +233,7 @@ async def check_serving(request, create):
                 default_sampling_params={},
                 override_max_tokens=None,
                 _get_data_parallel_rank=Mock(),
-                _extract_prompt_len=Mock(return_value=4),
+                _extract_prompt_len=lambda item: len(item["prompt_token_ids"]),
                 _extract_prompt_components=lambda item: SimpleNamespace(
                     token_ids=item["prompt_token_ids"]
                 ),
@@ -222,8 +254,8 @@ async def check_serving(request, create):
             else:
                 assert result == ("stream" if stream else "full"), result
                 generate.assert_called_once()
-                assert generate.call_args.args[0] is rendered
-                assert rendered["prompt_token_ids"] == [10, 11, 12, 13]
+                assert generate.call_args.args[0] is inputs[0]
+            assert [item.get("prompt_token_ids", []) for item in inputs] == original_ids
 
 
 def main(checkout):
